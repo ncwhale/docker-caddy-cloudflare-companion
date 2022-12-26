@@ -11,15 +11,16 @@ import os
 import re
 import requests
 import logging
-import time
 import threading
 from urllib.parse import urlparse
+
+from.repeaterun import RepeatedRun
 
 DEFAULT_TTL = os.environ.get('DEFAULT_TTL', "1")
 SWARM_MODE = os.environ.get('SWARM_MODE', "FALSE")
 ENABLE_TRAEFIK_POLL = os.environ.get('ENABLE_TRAEFIK_POLL', "FALSE")
 REFRESH_ENTRIES = os.environ.get('REFRESH_ENTRIES', "FALSE")
-TRAEFIK_VERSION = os.environ.get('TRAEFIK_VERSION', "2")
+CADDY_VERSION = os.environ.get('CADDY_VERSION', "2")
 TRAEFIK_POLL_URL = os.environ.get('TRAEFIK_POLL_URL', None)
 TRAEFIK_POLL_SECONDS = int(os.environ.get('TRAEFIK_POLL_SECONDS', "60"))
 CONTAINER_LOG_LEVEL = os.environ.get('CONTAINER_LOG_LEVEL', "INFO")
@@ -50,38 +51,10 @@ formatter = logging.Formatter('[%(levelname)s] %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-synced_mappings = {}
+synced_mappings = {}        
 
 
-class RepeatedTimer(object):
-    def __init__(self, interval, function, *args, **kwargs):
-        self._timer = None
-        self.interval = interval
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.is_running = False
-        self.next_call = time.time()
-        self.start()
-
-    def _run(self):
-        self.is_running = False
-        self.start()
-        self.function(*self.args, **self.kwargs)
-
-    def start(self):
-        if not self.is_running:
-            self.next_call += self.interval
-            self._timer = threading.Timer(self.next_call - time.time(), self._run)
-            self._timer.start()
-            self.is_running = True
-
-    def stop(self):
-        self._timer.cancel()
-        self.is_running = False
-
-
-def init_doms_from_env():
+def init_domain_config():
     RX_DOMS = re.compile('^DOMAIN[0-9]+$', re.IGNORECASE)
 
     doms = list()
@@ -306,7 +279,7 @@ def check_service_t2(s):
 def check_traefik(included_hosts, excluded_hosts):
     mappings = {}
     logger.debug("Called check_traefik")
-    if TRAEFIK_VERSION == "2":
+    if CADDY_VERSION == "2":
         r = requests.get("{}/api/http/routers".format(TRAEFIK_POLL_URL))
         if r.ok:
             for router in r.json():
@@ -366,18 +339,18 @@ def get_initial_mappings(included_hosts, excluded_hosts):
     mappings = {}
     for c in client.containers.list():
         logger.debug("Container List Discovery Loop")
-        if TRAEFIK_VERSION == "1":
+        if CADDY_VERSION == "1":
             add_to_mappings(mappings, check_container_t1(c))
-        elif TRAEFIK_VERSION == "2":
+        elif CADDY_VERSION == "2":
             add_to_mappings(mappings, check_container_t2(c))
 
     if SWARM_MODE:
         logger.debug("Service List Discovery Loop")
         for s in api.services():
             full_serv_id = s["ID"]
-            if TRAEFIK_VERSION == "1":
+            if CADDY_VERSION == "1":
                 add_to_mappings(mappings, check_service_t1(full_serv_id))
-            elif TRAEFIK_VERSION == "2":
+            elif CADDY_VERSION == "2":
                 add_to_mappings(mappings, check_service_t2(full_serv_id))
 
     if TRAEFIK_POLL_URL:
@@ -457,7 +430,7 @@ if DRY_RUN:
     logger.warning("Dry Run: %s", DRY_RUN)
 logger.debug("Swarm Mode: %s", SWARM_MODE)
 logger.debug("Refresh Entries: %s", REFRESH_ENTRIES)
-logger.debug("Caddy Version: %s", TRAEFIK_VERSION)
+logger.debug("Caddy Version: %s", CADDY_VERSION)
 logger.debug("Default TTL: %s", DEFAULT_TTL)
 if not email:
     logger.debug("API Mode: Scoped")
@@ -468,7 +441,7 @@ else:
 
 
 if ENABLE_TRAEFIK_POLL:
-    if TRAEFIK_VERSION == "2":
+    if CADDY_VERSION == "2":
         if uri_valid(TRAEFIK_POLL_URL):
             logger.debug("Caddy Poll Url: %s", TRAEFIK_POLL_URL)
             logger.debug("Caddy Poll Seconds: %s", TRAEFIK_POLL_SECONDS)
@@ -487,14 +460,14 @@ if SWARM_MODE:
     DOCKER_HOST = os.environ.get('DOCKER_HOST', None)
     api = docker.APIClient(base_url=DOCKER_HOST)
 
-doms = init_doms_from_env()
+doms = init_domain_config()
 traefik_included_hosts, traefik_excluded_hosts = init_traefik_from_env()
 
 sync_mappings(get_initial_mappings(traefik_included_hosts, traefik_excluded_hosts), doms)
 
 if ENABLE_TRAEFIK_POLL:
     logger.debug("Starting traefik router polling")
-    traefik_poll = RepeatedTimer(TRAEFIK_POLL_SECONDS, check_traefik_and_sync_mappings, traefik_included_hosts, traefik_excluded_hosts, doms)
+    traefik_poll = RepeatedRun(TRAEFIK_POLL_SECONDS, check_traefik_and_sync_mappings, traefik_included_hosts, traefik_excluded_hosts, doms)
     atexit.register(traefik_poll.stop)
 
 logger.debug("Starting event watch routines")
@@ -507,11 +480,11 @@ for event in client.events(since=t, filters={'Type': 'service', 'Action': u'upda
     new_mappings = {}
     if event.get(u'status') == u'start':
         try:
-            if TRAEFIK_VERSION == "1":
+            if CADDY_VERSION == "1":
                 add_to_mappings(new_mappings, check_container_t1(client.containers.get(event.get(u'id'))))
                 if SWARM_MODE:
                     add_to_mappings(new_mappings, check_service_t1(client.services.get(event.get(u'id'))))
-            elif TRAEFIK_VERSION == "2":
+            elif CADDY_VERSION == "2":
                 add_to_mappings(new_mappings, check_container_t2(client.containers.get(event.get(u'id'))))
                 if SWARM_MODE:
                     add_to_mappings(new_mappings, check_service_t2(client.services.get(event.get(u'id'))))
@@ -522,11 +495,11 @@ for event in client.events(since=t, filters={'Type': 'service', 'Action': u'upda
     if SWARM_MODE:
         if event.get(u'Action') == u'update':
             try:
-                if TRAEFIK_VERSION == "1":
+                if CADDY_VERSION == "1":
                     node_id = event.get(u'Actor').get(u'ID')
                     logger.debug("Detected Update on node: %s", node_id)
                     add_to_mappings(new_mappings, check_service_t1(node_id))
-                elif TRAEFIK_VERSION == "2":
+                elif CADDY_VERSION == "2":
                     node_id = event.get(u'Actor').get(u'ID')
                     service_id = client.services.list()
                     logger.debug("Detected Update on node: %s", node_id)
