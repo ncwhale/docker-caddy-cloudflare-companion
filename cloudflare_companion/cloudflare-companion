@@ -42,7 +42,7 @@ match CONTAINER_LOG_LEVEL.upper():
         logger.setLevel(logging.DEBUG)
         VERBOSE = True
     case _:
-        logger.info("CONTAINER_LOG_LEVEL Unknown, ignore.")
+        logger.info(f"Unknown CONTAINER_LOG_LEVEL: {CONTAINER_LOG_LEVEL}, ignore.")
 
 
 ch = logging.StreamHandler()
