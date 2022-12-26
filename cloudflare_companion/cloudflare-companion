@@ -11,22 +11,12 @@ import os
 import re
 import requests
 import logging
-import threading
 from urllib.parse import urlparse
 
 from.repeaterun import RepeatedRun
 
-DEFAULT_TTL = os.environ.get('DEFAULT_TTL', "1")
-SWARM_MODE = os.environ.get('SWARM_MODE', "FALSE")
-ENABLE_TRAEFIK_POLL = os.environ.get('ENABLE_TRAEFIK_POLL', "FALSE")
-REFRESH_ENTRIES = os.environ.get('REFRESH_ENTRIES', "FALSE")
-CADDY_VERSION = os.environ.get('CADDY_VERSION', "2")
-TRAEFIK_POLL_URL = os.environ.get('TRAEFIK_POLL_URL', None)
-TRAEFIK_POLL_SECONDS = int(os.environ.get('TRAEFIK_POLL_SECONDS', "60"))
-CONTAINER_LOG_LEVEL = os.environ.get('CONTAINER_LOG_LEVEL', "INFO")
-DRY_RUN = os.environ.get('DRY_RUN', "FALSE")
-
 # setup logging
+CONTAINER_LOG_LEVEL = os.environ.get('CONTAINER_LOG_LEVEL', "INFO")
 logger = logging.getLogger(__name__)
 VERBOSE = False
 
@@ -51,66 +41,87 @@ formatter = logging.Formatter('[%(levelname)s] %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-synced_mappings = {}        
+# Process env variables
+STR_TRUE_RE = re.compile("^\s*(?:Y(?:ES)?|T(?:RUE)?|1)\s*$", re.IGNORECASE)
+IS_STR_TRUE = lambda x : STR_TRUE_RE.match(x) != None
+
+# Get env variables
+DEFAULT_TTL = os.environ.get('DEFAULT_TTL', "1")
+SWARM_MODE = IS_STR_TRUE(os.environ.get('SWARM_MODE', "FALSE"))
+ENABLE_CADDY_POLL = IS_STR_TRUE(os.environ.get('ENABLE_CADDY_POLL', "FALSE"))
+CADDY_VERSION = os.environ.get('CADDY_VERSION', "2")
+CADDY_POLL_URL = os.environ.get('CADDY_POLL_URL', None)
+CADDY_POLL_SECONDS = int(os.environ.get('CADDY_POLL_SECONDS', "60"))
+DRY_RUN = IS_STR_TRUE(os.environ.get('DRY_RUN', "FALSE"))
+REFRESH_ENTRIES = IS_STR_TRUE(os.environ.get('REFRESH_ENTRIES', "FALSE"))
+
+
+synced_mappings = {}
 
 
 def init_domain_config():
     RX_DOMS = re.compile('^DOMAIN[0-9]+$', re.IGNORECASE)
 
-    doms = list()
+    domain_list = list()
     for k in os.environ:
         if not RX_DOMS.match(k):
             continue
 
         name = os.environ[k]
         try:
-            dom = {
+            domain = {
                 'name': name,
-                'proxied': os.environ.get("{}_PROXIED".format(k), "FALSE").upper() == "TRUE",
-                'zone_id': os.environ["{}_ZONE_ID".format(k)],
-                'ttl': os.environ.get("{}_TTL".format(k), DEFAULT_TTL),
-                'target_domain': os.environ.get("{}_TARGET_DOMAIN".format(k), target_domain),
-                'excluded_sub_domains': list(filter(None, os.environ.get("{}_EXCLUDED_SUB_DOMAINS".format(k), "").split(','))),
+                'proxied': IS_STR_TRUE(os.environ.get(f"{k}_PROXIED", "FALSE")),
+                'zone_id': os.environ[f"{k}_ZONE_ID"],
+                'ttl': os.environ.get(f"{k}_TTL", DEFAULT_TTL),
+                'target_domain': os.environ.get(f"{k}_TARGET_DOMAIN", target_domain),
+                'excluded_sub_domains': list(filter(None, os.environ.get(f"{k}_EXCLUDED_SUB_DOMAINS", "").split(','))),
             }
 
-            doms.append(dom)
+            domain_list.append(domain)
 
         except KeyError as e:
-            logger.error("*** ERROR: {} is not set!".format(e))
+            logger.error(f"*** ERROR: {e} is not set!")
 
-    for dom in doms:
-        logger.debug("Domain Configuration: %s", dom)
+    for domain in domain_list:
+        logger.debug("Domain Configuration: %s", domain)
         
-    return doms
+    return domain_list
 
 
-def init_traefik_from_env():
-    TRAEFIK_INCLUDED_HOST = re.compile('^TRAEFIK_INCLUDED_HOST[0-9]+$', re.IGNORECASE)
-    TRAEFIK_EXCLUDED_HOST = re.compile('^TRAEFIK_EXCLUDED_HOST[0-9]+$', re.IGNORECASE)
+def init_caddy_from_env():
+    CADDY_INCLUDED_HOST = re.compile('^CADDY_INCLUDED_HOST[0-9_]+$', re.IGNORECASE)
+    CADDY_EXCLUDED_HOST = re.compile('^CADDY_EXCLUDED_HOST[0-9_]+$', re.IGNORECASE)
 
-    traefik_included_hosts = list()
-    traefik_excluded_hosts = list()
+    caddy_included_hosts = set()
+    caddy_excluded_hosts = set()
     for k in os.environ:
-        if TRAEFIK_INCLUDED_HOST.match(k):
-            traefik_included_hosts.append(re.compile(os.environ.get(k)))
+        if CADDY_INCLUDED_HOST.match(k):
+            caddy_included_hosts.append(os.environ.get(k))
 
-        if TRAEFIK_EXCLUDED_HOST.match(k):
-            traefik_excluded_hosts.append(re.compile(os.environ.get(k)))
+        if CADDY_EXCLUDED_HOST.match(k):
+            caddy_excluded_hosts.append(os.environ.get(k))
 
-    if len(traefik_included_hosts) > 0:
+    # re.compile here.
+    caddy_included_list = list()
+    caddy_excluded_list = list()
+
+    if len(caddy_included_hosts) > 0:
         logger.debug("Caddy Host Includes")
-        for traefik_included_host in traefik_included_hosts:
-            logger.debug("  %s", traefik_included_host.pattern)
+        for caddy_included_host in caddy_included_hosts:
+            caddy_included_list.append(re.compile(caddy_included_host))
+            logger.debug("  %s", caddy_included_host)
     else:
         logger.debug("Caddy Host Includes: .*")
-        traefik_included_hosts.append(re.compile(".*"))
+        caddy_included_list.append(re.compile(".*"))
 
-    if len(traefik_excluded_hosts) > 0:
+    if len(caddy_excluded_hosts) > 0:
         logger.debug("Caddy Host Excludes")
-        for traefik_excluded_host in traefik_excluded_hosts:
-            logger.debug("  %s", traefik_excluded_host.pattern)
+        for caddy_excluded_host in caddy_excluded_hosts:
+            caddy_excluded_list.append(re.compile(caddy_excluded_host))
+            logger.debug("  %s", caddy_excluded_host)
 
-    return traefik_included_hosts, traefik_excluded_hosts
+    return caddy_included_list, caddy_excluded_list
 
 
 def is_domain_excluded(name, dom):
@@ -280,7 +291,7 @@ def check_traefik(included_hosts, excluded_hosts):
     mappings = {}
     logger.debug("Called check_traefik")
     if CADDY_VERSION == "2":
-        r = requests.get("{}/api/http/routers".format(TRAEFIK_POLL_URL))
+        r = requests.get("{}/api/http/routers".format(CADDY_POLL_URL))
         if r.ok:
             for router in r.json():
                 if "status" in router and router["status"] == "enabled":
@@ -353,7 +364,7 @@ def get_initial_mappings(included_hosts, excluded_hosts):
             elif CADDY_VERSION == "2":
                 add_to_mappings(mappings, check_service_t2(full_serv_id))
 
-    if TRAEFIK_POLL_URL:
+    if CADDY_POLL_URL:
         logger.debug("Caddy List Discovery Loop")
         add_to_mappings(mappings, check_traefik(included_hosts, excluded_hosts))
 
@@ -388,11 +399,11 @@ try:
 
     # Check for any cf zone id based on the respective domain env var existing
     RX_DOMS = re.compile('^DOMAIN[0-9]+$', re.IGNORECASE)
-    for env in os.environ:
-        if not RX_DOMS.match(env):
+    for key in os.environ:
+        if not RX_DOMS.match(key):
             continue
 
-        get_secret_by_env("{}_ZONE_ID".format(env))
+        get_secret_by_env(f"{key}_ZONE_ID")
 
     # Check for lowercase docker secrets
     if not email:
@@ -406,25 +417,6 @@ try:
 except KeyError as e:
     exit("ERROR: {} not defined".format(e))
 
-if DRY_RUN.lower() == "true":
-    DRY_RUN = True
-elif DRY_RUN.lower() == "false":
-    DRY_RUN = False
-
-if REFRESH_ENTRIES.lower() == "true":
-    REFRESH_ENTRIES = True
-elif REFRESH_ENTRIES.lower() == "false":
-    REFRESH_ENTRIES = False
-
-if SWARM_MODE.lower() == "true":
-    SWARM_MODE = True
-elif SWARM_MODE.lower() == "false":
-    SWARM_MODE = False
-
-if ENABLE_TRAEFIK_POLL.lower() == "true":
-    ENABLE_TRAEFIK_POLL = True
-elif ENABLE_TRAEFIK_POLL.lower() == "false":
-    ENABLE_TRAEFIK_POLL = False
 
 if DRY_RUN:
     logger.warning("Dry Run: %s", DRY_RUN)
@@ -440,19 +432,19 @@ else:
     cf = CloudFlare.CloudFlare(debug=VERBOSE, email=email, token=token)
 
 
-if ENABLE_TRAEFIK_POLL:
+if ENABLE_CADDY_POLL:
     if CADDY_VERSION == "2":
-        if uri_valid(TRAEFIK_POLL_URL):
-            logger.debug("Caddy Poll Url: %s", TRAEFIK_POLL_URL)
-            logger.debug("Caddy Poll Seconds: %s", TRAEFIK_POLL_SECONDS)
+        if uri_valid(CADDY_POLL_URL):
+            logger.debug("Caddy Poll Url: %s", CADDY_POLL_URL)
+            logger.debug("Caddy Poll Seconds: %s", CADDY_POLL_SECONDS)
         else:
-            ENABLE_TRAEFIK_POLL = False
-            logger.error("Caddy Polling Mode disabled because traefik url is invalid: %s", TRAEFIK_POLL_URL)
+            ENABLE_CADDY_POLL = False
+            logger.error("Caddy Polling Mode disabled because caddy api url is invalid: %s", CADDY_POLL_URL)
     else:
-        ENABLE_TRAEFIK_POLL = False
-        logger.error("Caddy Polling Mode disabled because traefik version is not 2")
+        ENABLE_CADDY_POLL = False
+        logger.error("Caddy Polling Mode disabled because caddy version is not 2")
 
-logger.debug("Caddy Polling Mode: %s", False)
+logger.debug("Caddy Polling Mode: %s", ENABLE_CADDY_POLL)
 
 client = docker.from_env()
 
@@ -461,13 +453,13 @@ if SWARM_MODE:
     api = docker.APIClient(base_url=DOCKER_HOST)
 
 doms = init_domain_config()
-traefik_included_hosts, traefik_excluded_hosts = init_traefik_from_env()
+traefik_included_hosts, traefik_excluded_hosts = init_caddy_from_env()
 
 sync_mappings(get_initial_mappings(traefik_included_hosts, traefik_excluded_hosts), doms)
 
-if ENABLE_TRAEFIK_POLL:
+if ENABLE_CADDY_POLL:
     logger.debug("Starting traefik router polling")
-    traefik_poll = RepeatedRun(TRAEFIK_POLL_SECONDS, check_traefik_and_sync_mappings, traefik_included_hosts, traefik_excluded_hosts, doms)
+    traefik_poll = RepeatedRun(CADDY_POLL_SECONDS, check_traefik_and_sync_mappings, traefik_included_hosts, traefik_excluded_hosts, doms)
     atexit.register(traefik_poll.stop)
 
 logger.debug("Starting event watch routines")
