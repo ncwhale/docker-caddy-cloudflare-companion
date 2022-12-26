@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "cloudflare-companion"
+version = "0.1.0"
+description = ""
+authors = ["Whale Mo <ncwhale@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "cloudflare_companion"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+cloudflare = "^2.11.1"
+requests = "^2.28.1"
+get-docker-secret = "^1.0.2"
+docker = {extras = ["tls"], version = "^6.0.1"}
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
