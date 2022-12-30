@@ -319,7 +319,8 @@ def check_caddy(included_hosts, excluded_hosts):
                         except KeyError:
                             continue
 
-    return mappings
+    # Filter these domains
+    return {k:v for k,v in mappings.items() if is_matching(k, included_hosts) and not is_matching(k, excluded_hosts)}
 
 
 def check_caddy_and_sync_mappings(included_hosts, excluded_hosts, domain_infos):
