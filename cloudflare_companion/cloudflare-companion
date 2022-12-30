@@ -57,9 +57,11 @@ REFRESH_ENTRIES = IS_STR_TRUE(os.environ.get('REFRESH_ENTRIES', "FALSE"))
 
 
 synced_mappings = {}
+CADDY_DOCKER_LABEL_RE = re.compile("^caddy(?:_[0-9]+)?$", re.IGNORECASE)
+CADDY_DOCKER_DOMAIN_RE = re.compile("^(?:(?:(?!\-))(?:xn\-\-)?[a-z0-9\-_]{0,61}[a-z0-9]{1,1}\.)*(?:xn\-\-)?(?:[a-z0-9\-]{1,61}|[a-z0-9\-]{1,30})\.[a-z]{2,}$")
 
 
-def init_domain_config():
+def init_domain_config() -> list:
     RX_DOMS = re.compile('^DOMAIN[0-9]+$', re.IGNORECASE)
 
     domain_list = list()
@@ -124,15 +126,15 @@ def init_caddy_from_env():
     return caddy_included_list, caddy_excluded_list
 
 
-def is_domain_excluded(name, dom):
-    excluded_sub_domains = dom['excluded_sub_domains']
+def is_subdomain_excluded(name, domain_config)->bool:
+    excluded_sub_domains = domain_config['excluded_sub_domains']
 
-    for sub_dom in excluded_sub_domains:
+    for sub_domain in excluded_sub_domains:
         
-        fqdn_with_sub_dom = sub_dom + '.' + dom['name']
+        fqdn_with_sub_dom = sub_domain + '.' + domain_config['name']
     
         if name.find(fqdn_with_sub_dom) != -1:
-            logger.info('Ignoring %s because it falls until excluded sub domain: %s', name, sub_dom)
+            logger.info('Ignoring %s because it falls until excluded sub domain: %s', name, sub_domain)
             return True
 
     return False
@@ -146,13 +148,13 @@ def is_matching(host, regexes):
 
 
 def point_domain(name, domain_infos):
-    ok = True
+    result = True
     for domain_info in domain_infos:
         if name == domain_info['target_domain']:
             continue
 
         if name.find(domain_info['name']) >= 0:
-            if is_domain_excluded(name, domain_info):
+            if is_subdomain_excluded(name, domain_info):
                 continue
 
             records = cf.zones.dns_records.get(domain_info['zone_id'], params={u'name': name})
@@ -180,7 +182,7 @@ def point_domain(name, domain_infos):
                             logger.info("Updated existing record: %s to point to %s", name, domain_info['target_domain'])
                 except CloudFlare.exceptions.CloudFlareAPIError as ex:
                     logger.error('** %s - %d %s' % (name, ex, ex))
-                    ok = False
+                    result = False
                     pass
             else:
                 try:
@@ -191,8 +193,8 @@ def point_domain(name, domain_infos):
                     logger.info("Created new record: %s to point to %s", name, domain_info['target_domain'])
                 except CloudFlare.exceptions.CloudFlareAPIError as ex:
                     logger.error('** %s - %d %s' % (name, ex, ex))
-                    ok = False
-    return ok
+                    result = False
+    return result
 
 
 def check_container_t1(c):
