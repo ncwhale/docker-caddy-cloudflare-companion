@@ -301,16 +301,23 @@ def check_caddy(included_hosts, excluded_hosts):
                     try:
                         for route in server_config["routes"]:
                             for match in route["match"]:
-                                for host in match["host"]:
-                                    if CADDY_DOCKER_DOMAIN_RE.match(host):
-                                        mappings[host] = 2
+                                for name in match["host"]:
+                                    if CADDY_DOCKER_DOMAIN_RE.match(name):
+                                        mappings[name] = 2
 
                     except KeyError:
                         continue
 
             if "tls" in apps_section:
             # 2. Process tls app, search domains.
-                pass
+                if "tls" in apps_section and "automation" in apps_section["tls"] and "policies" in apps_section["tls"]["automation"]:
+                    for policy in apps_section["tls"]["automation"]["policies"]:
+                        try:
+                            for name in policy["subjects"]:
+                                if CADDY_DOCKER_DOMAIN_RE.match(name):
+                                    mappings[name] = 2
+                        except KeyError:
+                            continue
 
     return mappings
 
