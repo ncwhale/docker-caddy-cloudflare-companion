@@ -304,7 +304,12 @@ def check_caddy(included_hosts, excluded_hosts):
                                 for name in match["host"]:
                                     if CADDY_DOCKER_DOMAIN_RE.match(name):
                                         mappings[name] = 2
-
+                            for handle in route["handle"]:
+                                for sub_route in handle["routess"]:
+                                    for match in route["match"]:
+                                        for name in match["host"]:
+                                            if CADDY_DOCKER_DOMAIN_RE.match(name):
+                                                mappings[name] = 2
                     except KeyError:
                         continue
 
