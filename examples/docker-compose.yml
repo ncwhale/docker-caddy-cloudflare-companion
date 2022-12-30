@@ -1,13 +1,44 @@
-version: '3.7'
-services:
+version: '3'
 
-  cloudflare-companion:
-    image: tiredofit/traefik-cloudflare-companion
-    container_name: cloudflare-companion
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+services:
+  caddy_server:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - controller
+      - default
     environment:
-      - TRAEFIK_VERSION=2
+      - CADDY_DOCKER_MODE=server
+      - CADDY_CONTROLLER_NETWORK=10.200.200.0/24
+    volumes:
+      # this volume is needed to keep the certificates
+      # otherwise, new ones will be re-issued upon restart
+      - $PWD/data:/data
+      - $PWD/config:/config
+    labels:
+      caddy_controlled_server:
+
+  caddy_controller:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    networks:
+      - controller
+      - default
+    environment:
+      - CADDY_DOCKER_MODE=controller
+      - CADDY_CONTROLLER_NETWORK=10.200.200.0/24
+      - CADDY_INGRESS_NETWORKS=caddy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  caddy_cloudflare_companion:
+    image: whalemo/caddy-cloudflare-companion
+    networks:
+      - controller
+    environment:
+      - CADDY_VERSION=2
       - CF_EMAIL=email@example.com
       - CF_TOKEN=fbSx3dk3A3mJ6UukLQ7zRbo63H5UdsGSCqQnTvbJDgyQaTp
 
@@ -17,13 +48,5 @@ services:
       #- DOCKER_HOST=tcp://198.51.100.32:2376
       #- DOCKER_CERT_PATH=/docker-certs
       #- DOCKER_TLS_VERIFY=1
-    networks:
-    - internal
-    - services
-    restart: always
-
-networks:
-  internal:
-    external: false
-  services:
-    external: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
