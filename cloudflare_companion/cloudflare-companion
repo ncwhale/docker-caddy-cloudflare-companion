@@ -11,9 +11,37 @@ import os
 import re
 import requests
 import logging
+import threading
 from urllib.parse import urlparse
 
-from.repeaterun import RepeatedRun
+class RepeatedRun(object):
+    def __init__(self, interval, function, *args, **kwargs):
+        self._thread = None
+        self.exit_event = threading.Event()
+        self.exit_event.set() # Thread is not running when inited.
+
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+
+    def _run(self):
+        while not self.exit_event.is_set():
+            self.function(*self.args, **self.kwargs)
+            self.exit_event.wait(self.interval) # wait for flag set.
+
+    def start(self):
+        if self.exit_event.is_set():
+            self.exit_event.clear()
+            self._thread = threading.Thread(target=self._run, name=str(self.function))
+            self._thread.start()
+
+    def stop(self):
+        self.exit_event.set() # This will set flag and let the running thread weakup.
+
+        if self._thread is not None:
+            self._thread.join() # Wait for thread done their job.
+            self._thread = None
 
 # setup logging
 CONTAINER_LOG_LEVEL = os.environ.get('CONTAINER_LOG_LEVEL', "INFO")
@@ -57,6 +85,8 @@ REFRESH_ENTRIES = IS_STR_TRUE(os.environ.get('REFRESH_ENTRIES', "FALSE"))
 
 
 synced_mappings = {}
+synced_mappings_lock = threading.Lock()
+
 CADDY_DOCKER_V2_LABEL_RE = re.compile("^caddy(?:_[0-9]+)?$", re.IGNORECASE)
 CADDY_DOCKER_V2_PRELABEL_RE = re.compile("^caddy(?:_[0-9]+)?\.", re.IGNORECASE)
 CADDY_DOCKER_DOMAIN_RE = re.compile("^(?:(?:(?!\-))(?:xn\-\-)?[a-z0-9\-_]{0,61}[a-z0-9]{1,1}\.)*(?:xn\-\-)?(?:[a-z0-9\-]{1,61}|[a-z0-9\-]{1,30})\.[a-z]{2,}$")
@@ -246,14 +276,41 @@ def check_caddy(included_hosts, excluded_hosts):
     mappings = {}
     logger.debug("Called check_caddy")
     if CADDY_VERSION == "2":
-        r = requests.get("{}/config/".format(CADDY_POLL_URL))
-        if r.ok:
+        for url in CADDY_POLL_URL:
+            r = requests.get(f"{url}/config/")
+            if not r.ok:
+                logger.warn("Request from %s failed.", url)
+                continue
+
             # Process the caddy config json.
+            try:
+                caddy_config = r.json()
+            except requests.exceptions.JSONDecodeError:
+                logger.warn("Decode JSON from %s failed.", url)
+                continue
+            
+            apps_section = caddy_config.get("apps")
 
+            if apps_section is None:
+                # This caddy is not configured with any app.
+                continue
+
+            if "http" in apps_section and "servers" in apps_section["http"]:
             # 1. Process http app, search domains.
+                for server_key,server_config in apps_section["http"]["servers"].items():
+                    try:
+                        for route in server_config["routes"]:
+                            for match in route["match"]:
+                                for host in match["host"]:
+                                    if CADDY_DOCKER_DOMAIN_RE.match(host):
+                                        mappings[host] = 2
 
+                    except KeyError:
+                        continue
+
+            if "tls" in apps_section:
             # 2. Process tls app, search domains.
-            pass
+                pass
 
     return mappings
 
@@ -270,11 +327,12 @@ def add_to_mappings(current_mappings, mappings):
 
 
 def sync_mappings(mappings, domain_infos):
-    for k, v in mappings.items():
-        current_mapping = synced_mappings.get(k)
-        if current_mapping is None or current_mapping > v:
-            if point_domain(k, domain_infos):
-                synced_mappings[k] = v
+    with synced_mappings_lock:
+        for k, v in mappings.items():
+            current_mapping = synced_mappings.get(k)
+            if current_mapping is None or current_mapping > v:
+                if point_domain(k, domain_infos):
+                    synced_mappings[k] = v
 
 
 def get_initial_mappings(included_hosts, excluded_hosts):
@@ -364,8 +422,12 @@ else:
 if ENABLE_CADDY_POLL:
     if CADDY_VERSION == "2":
         if uri_valid(CADDY_POLL_URL):
-            logger.debug("Caddy Poll Url: %s", CADDY_POLL_URL)
+            logger.debug("Caddy Poll Signal Url: %s", CADDY_POLL_URL)
             logger.debug("Caddy Poll Seconds: %s", CADDY_POLL_SECONDS)
+            CADDY_POLL_URL = (CADDY_POLL_URL, )
+        elif CADDY_POLL_URL == "DISCOVERY":
+            # TODO: Get all caddy server labled "caddy_controlled_server" from "controller-network" and add to poll list.
+            pass
         else:
             ENABLE_CADDY_POLL = False
             logger.error("Caddy Polling Mode disabled because caddy api url is invalid: %s", CADDY_POLL_URL)
