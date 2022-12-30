@@ -57,8 +57,11 @@ REFRESH_ENTRIES = IS_STR_TRUE(os.environ.get('REFRESH_ENTRIES', "FALSE"))
 
 
 synced_mappings = {}
-CADDY_DOCKER_LABEL_RE = re.compile("^caddy(?:_[0-9]+)?$", re.IGNORECASE)
+CADDY_DOCKER_V2_LABEL_RE = re.compile("^caddy(?:_[0-9]+)?$", re.IGNORECASE)
+CADDY_DOCKER_V2_PRELABEL_RE = re.compile("^caddy(?:_[0-9]+)?\.", re.IGNORECASE)
 CADDY_DOCKER_DOMAIN_RE = re.compile("^(?:(?:(?!\-))(?:xn\-\-)?[a-z0-9\-_]{0,61}[a-z0-9]{1,1}\.)*(?:xn\-\-)?(?:[a-z0-9\-]{1,61}|[a-z0-9\-]{1,30})\.[a-z]{2,}$")
+CADDY_DOCKER_HOST_DOMAIN_RE = re.compile("^host +((?:(?:(?!\-))(?:xn\-\-)?[a-z0-9\-_]{0,61}[a-z0-9]{1,1}\.)*(?:xn\-\-)?(?:[a-z0-9\-]{1,61}|[a-z0-9\-]{1,30})\.[a-z]{2,})$")
+CADDY_DOCKER_WILDCARD_DOMAIN_RE = re.compile("^\*\.(?:(?:(?!\-))(?:xn\-\-)?[a-z0-9\-_]{0,61}[a-z0-9]{1,1}\.)*(?:xn\-\-)?(?:[a-z0-9\-]{1,61}|[a-z0-9\-]{1,30})\.[a-z]{2,}$")
 
 
 def init_domain_config() -> list:
@@ -140,9 +143,9 @@ def is_subdomain_excluded(name, domain_config)->bool:
     return False
 
 
-def is_matching(host, regexes):
+def is_matching(name, regexes):
     for regex in regexes:
-        if regex.search(host):
+        if regex.search(name):
             return True
     return False
 
@@ -197,138 +200,66 @@ def point_domain(name, domain_infos):
     return result
 
 
-def check_container_t1(c):
+def extract_domain_from_label_v2(labels):
     mappings = {}
-    logger.debug("Called check_container_t1 for: %s", c)
+    for prop in labels:
+        value = labels.get(prop)
+        if CADDY_DOCKER_V2_LABEL_RE.match(prop):
+            # It's a caddy[_\d+]: domain.name,list label.
+            logger.debug("caddy label: %s:%s", prop, value)
+            for name in [ s.strip() for s in value.split(",")]:
+                if CADDY_DOCKER_DOMAIN_RE.match(name):
+                    logger.debug("  matched domain: %s:%s",  prop, name)
+                    mappings[name] = 1
+                elif CADDY_DOCKER_WILDCARD_DOMAIN_RE.match(name):
+                    logger.debug("  wildcard domain: %s:%s",  prop, name)
+        elif CADDY_DOCKER_V2_PRELABEL_RE.match(prop):
+            # It's a caddy[_\d+].X label, try find host config.
+            m = CADDY_DOCKER_HOST_DOMAIN_RE.match(value)
+            if m is not None:
+                name = m.group(1)
+                logger.debug("  host domain: %s:%s",  prop, name)
+                mappings[name] = 1
+
+    return mappings
+
+
+def check_container_v2(c):
+    mappings = {}
+    logger.debug("Called check_container_v2 for: %s", c)
     cont_id = c.attrs.get(u'Id')
-    for prop in c.attrs.get(u'Config').get(u'Labels'):
-        if re.match('traefik.*.frontend.rule', prop):
-            value = c.attrs.get(u'Config').get(u'Labels').get(prop)
-            if 'Host' in value:
-                value = value.split("Host:")[1].strip()
-                logger.debug("Container ID:", cont_id, "rule value:", value)
-                if ',' in value:
-                    for v in value.split(","):
-                        logger.info("Found Container ID: %s with Multi-Hostname %s", cont_id, v)
-                        mappings[v] = 1
-                else:
-                    logger.info("Found Container ID: %s with Hostname %s", cont_id, value)
-                    mappings[value] = 1
-            else:
-                pass
-    return mappings
+    logger.debug("Process container: %s", cont_id)
 
+    return extract_domain_from_label_v2(c.attrs.get(u'Config').get(u'Labels'))
 
-def check_service_t1(s):
-    mappings = {}
-    logger.debug("Called check_service_t1 for: %s", s)
-    cont_id = s
-    s = client.services.get(s)
-    for prop in s.attrs.get(u'Spec').get(u'TaskTemplate').get(u'ContainerSpec').get(u'Labels'):
-        if re.match('traefik.*.frontend.rule', prop):
-            value = s.attrs.get(u'Spec').get(u'TaskTemplate').get(u'ContainerSpec').get(u'Labels').get(prop)
-            if 'Host' in value:
-                value = value.split("Host:")[1].strip()
-                logger.debug("Service ID: %s rule value: %s", cont_id, value)
-                if ',' in value:
-                    for v in value.split(","):
-                        logger.info("Found Service ID: %s with Multi-Hostname %s", cont_id, v)
-                        mappings[v] = 1
-                else:
-                    logger.info("Found Service ID: %s with Hostname %s", cont_id, value)
-                    mappings[value] = 1
-            else:
-                pass
-    return mappings
-
-
-def check_container_t2(c):
-    mappings = {}
-    logger.debug("Called check_container_t2 for: %s", c)
-    cont_id = c.attrs.get(u'Id')
-    for prop in c.attrs.get(u'Config').get(u'Labels'):
-        value = c.attrs.get(u'Config').get(u'Labels').get(prop)
-        if re.match('traefik.*?\.rule', prop):
-            if 'Host' in value:
-                logger.debug("Container ID: %s rule value: %s", cont_id, value)
-                extracted_domains = re.findall(r'\`([a-zA-Z0-9\.\-]+)\`', value)
-                logger.debug("Container ID: %s extracted domains from rule: %s", cont_id, extracted_domains)
-                if len(extracted_domains) > 1:
-                    for v in extracted_domains:
-                        logger.info("Found Service ID: %s with Multi-Hostname %s", cont_id, v)
-                        mappings[v] = 1
-                elif len(extracted_domains) == 1:
-                    logger.info("Found Service ID: %s with Hostname %s", cont_id, extracted_domains[0])
-                    mappings[extracted_domains[0]] = 1
-            else:
-                pass
-    return mappings
-
-
-def check_service_t2(s):
+def check_service_v2(s):
     mappings = {}
     logger.debug("Called check_service_t2 for: %s", s)
     cont_id = s
+    logger.debug("Process container: %s", cont_id)
+
     s = client.services.get(s)
-    for prop in s.attrs.get(u'Spec').get(u'Labels'):
-        value = s.attrs.get(u'Spec').get(u'Labels').get(prop)
-        if re.match('traefik.*?\.rule', prop):
-            if 'Host' in value:
-                logger.debug("Service ID: %s rule value: %s", cont_id, value)
-                extracted_domains = re.findall(r'\`([a-zA-Z0-9\.\-]+)\`', value)
-                logger.debug("Service ID: %s extracted domains from rule: %s", cont_id, extracted_domains)
-                if len(extracted_domains) > 1:
-                    for v in extracted_domains:
-                        logger.info("Found Service ID: %s with Multi-Hostname %s", cont_id, v)
-                        mappings[v] = 1
-                elif len(extracted_domains) == 1:
-                    logger.info("Found Service ID: %s with Hostname %s", cont_id, extracted_domains[0])
-                    mappings[extracted_domains[0]] = 1
-            else:
-                pass
-    return mappings
+    return extract_domain_from_label_v2(s.attrs.get(u'Spec').get(u'Labels'))
 
 
-def check_traefik(included_hosts, excluded_hosts):
+def check_caddy(included_hosts, excluded_hosts):
     mappings = {}
-    logger.debug("Called check_traefik")
+    logger.debug("Called check_caddy")
     if CADDY_VERSION == "2":
-        r = requests.get("{}/api/http/routers".format(CADDY_POLL_URL))
+        r = requests.get("{}/config/".format(CADDY_POLL_URL))
         if r.ok:
-            for router in r.json():
-                if "status" in router and router["status"] == "enabled":
-                    if "name" in router and "rule" in router:
-                        name = router["name"]
-                        value = router["rule"]
-                        if 'Host' in value:
-                            logger.debug("Caddy Router Name: %s rule value: %s", name, value)
-                            extracted_domains = re.findall(r'Host\(\`([a-zA-Z0-9\.\-]+)\`\)', value)
-                            logger.debug("Caddy Router Name: %s extracted domains from rule: %s", name, extracted_domains)
-                            if len(extracted_domains) > 1:
-                                for v in extracted_domains:
-                                    if is_matching(v, included_hosts):
-                                        if is_matching(v, excluded_hosts):
-                                            logger.debug("Caddy Router Name: %s with Multi-Hostname %s - Matched Exclude", name, v)
-                                        else:
-                                            logger.info("Found Caddy Router Name: %s with Multi-Hostname %s", name, v)
-                                            mappings[v] = 2
-                                    else:
-                                        logger.debug("Caddy Router Name: %s with Multi-Hostname %s: Not Match Include", name, v)
-                            elif len(extracted_domains) == 1:
-                                if is_matching(extracted_domains[0], included_hosts):
-                                    if is_matching(extracted_domains[0], excluded_hosts):
-                                        logger.debug("Caddy Router Name: %s with Hostname %s - Matched Exclude", name, extracted_domains[0])
-                                    else:
-                                        logger.info("Found Caddy Router Name: %s with Hostname %s", name, extracted_domains[0])
-                                        mappings[extracted_domains[0]] = 2
-                                else:
-                                    logger.debug("Caddy Router Name: %s with Hostname %s: Not Match Include", name, extracted_domains[0])
+            # Process the caddy config json.
+
+            # 1. Process http app, search domains.
+
+            # 2. Process tls app, search domains.
+            pass
 
     return mappings
 
 
-def check_traefik_and_sync_mappings(included_hosts, excluded_hosts, domain_infos):
-    sync_mappings(check_traefik(included_hosts, excluded_hosts),domain_infos)
+def check_caddy_and_sync_mappings(included_hosts, excluded_hosts, domain_infos):
+    sync_mappings(check_caddy(included_hosts, excluded_hosts),domain_infos)
 
 
 def add_to_mappings(current_mappings, mappings):
@@ -352,23 +283,19 @@ def get_initial_mappings(included_hosts, excluded_hosts):
     mappings = {}
     for c in client.containers.list():
         logger.debug("Container List Discovery Loop")
-        if CADDY_VERSION == "1":
-            add_to_mappings(mappings, check_container_t1(c))
-        elif CADDY_VERSION == "2":
-            add_to_mappings(mappings, check_container_t2(c))
+        if CADDY_VERSION == "2":
+            add_to_mappings(mappings, check_container_v2(c))
 
     if SWARM_MODE:
         logger.debug("Service List Discovery Loop")
         for s in api.services():
             full_serv_id = s["ID"]
-            if CADDY_VERSION == "1":
-                add_to_mappings(mappings, check_service_t1(full_serv_id))
-            elif CADDY_VERSION == "2":
-                add_to_mappings(mappings, check_service_t2(full_serv_id))
+            if CADDY_VERSION == "2":
+                add_to_mappings(mappings, check_service_v2(full_serv_id))
 
     if CADDY_POLL_URL:
         logger.debug("Caddy List Discovery Loop")
-        add_to_mappings(mappings, check_traefik(included_hosts, excluded_hosts))
+        add_to_mappings(mappings, check_caddy(included_hosts, excluded_hosts))
 
     return mappings
 
@@ -454,15 +381,15 @@ if SWARM_MODE:
     DOCKER_HOST = os.environ.get('DOCKER_HOST', None)
     api = docker.APIClient(base_url=DOCKER_HOST)
 
-doms = init_domain_config()
-traefik_included_hosts, traefik_excluded_hosts = init_caddy_from_env()
+domain_config = init_domain_config()
+caddy_included_hosts, caddy_excluded_hosts = init_caddy_from_env()
 
-sync_mappings(get_initial_mappings(traefik_included_hosts, traefik_excluded_hosts), doms)
+sync_mappings(get_initial_mappings(caddy_included_hosts, caddy_excluded_hosts), domain_config)
 
 if ENABLE_CADDY_POLL:
-    logger.debug("Starting traefik router polling")
-    traefik_poll = RepeatedRun(CADDY_POLL_SECONDS, check_traefik_and_sync_mappings, traefik_included_hosts, traefik_excluded_hosts, doms)
-    atexit.register(traefik_poll.stop)
+    logger.debug("Starting caddy router polling")
+    caddy_poll = RepeatedRun(CADDY_POLL_SECONDS, check_caddy_and_sync_mappings, caddy_included_hosts, caddy_excluded_hosts, domain_config)
+    atexit.register(caddy_poll.stop)
 
 logger.debug("Starting event watch routines")
 
@@ -474,14 +401,10 @@ for event in client.events(since=t, filters={'Type': 'service', 'Action': u'upda
     new_mappings = {}
     if event.get(u'status') == u'start':
         try:
-            if CADDY_VERSION == "1":
-                add_to_mappings(new_mappings, check_container_t1(client.containers.get(event.get(u'id'))))
+            if CADDY_VERSION == "2":
+                add_to_mappings(new_mappings, check_container_v2(client.containers.get(event.get(u'id'))))
                 if SWARM_MODE:
-                    add_to_mappings(new_mappings, check_service_t1(client.services.get(event.get(u'id'))))
-            elif CADDY_VERSION == "2":
-                add_to_mappings(new_mappings, check_container_t2(client.containers.get(event.get(u'id'))))
-                if SWARM_MODE:
-                    add_to_mappings(new_mappings, check_service_t2(client.services.get(event.get(u'id'))))
+                    add_to_mappings(new_mappings, check_service_v2(client.services.get(event.get(u'id'))))
 
         except docker.errors.NotFound as e:
             pass
@@ -489,17 +412,13 @@ for event in client.events(since=t, filters={'Type': 'service', 'Action': u'upda
     if SWARM_MODE:
         if event.get(u'Action') == u'update':
             try:
-                if CADDY_VERSION == "1":
-                    node_id = event.get(u'Actor').get(u'ID')
-                    logger.debug("Detected Update on node: %s", node_id)
-                    add_to_mappings(new_mappings, check_service_t1(node_id))
-                elif CADDY_VERSION == "2":
+                if CADDY_VERSION == "2":
                     node_id = event.get(u'Actor').get(u'ID')
                     service_id = client.services.list()
                     logger.debug("Detected Update on node: %s", node_id)
-                    add_to_mappings(new_mappings, check_service_t2(node_id))
+                    add_to_mappings(new_mappings, check_service_v2(node_id))
 
             except docker.errors.NotFound as e:
                 pass
 
-    sync_mappings(new_mappings, doms)
+    sync_mappings(new_mappings, domain_config)
