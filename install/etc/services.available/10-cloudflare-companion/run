@@ -1,11 +1,11 @@
 #!/command/with-contenv bash
 
 source /assets/functions/00-container
-PROCESS_NAME="traefik-cloudflare-companion"
+PROCESS_NAME="cloudflare-companion"
 
 check_container_initialized
 check_service_initialized init
 liftoff
 
-print_start "Starting Traefik Cloudflare Companion"
+print_start "Starting Caddy Cloudflare Companion"
 exec python3 -u /usr/sbin/cloudflare-companion

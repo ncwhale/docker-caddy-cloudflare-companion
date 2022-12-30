@@ -2,7 +2,7 @@
 
 source /assets/functions/00-container
 prepare_service single
-PROCESS_NAME="traefik-cloudflare-companion"
+PROCESS_NAME="cloudflare-companion"
 
 ### Sanity Test
 sanity_var TARGET_DOMAIN "Target Domain"
