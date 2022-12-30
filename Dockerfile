@@ -6,8 +6,8 @@ LABEL maintainer="Whale Mo (github.com/ncwhale)"
 
 ENV CONTAINER_ENABLE_MESSAGING=FALSE \
     CONTAINER_ENABLE_SCHEDULING=FALSE \
-    IMAGE_NAME="tiredofit/traefik-cloudflare-companion" \
-    IMAGE_REPO_URL="https://github.com/tiredofit/docker-traefik-cloudflare-companion/"
+    IMAGE_NAME="whalemo/caddy-cloudflare-companion" \
+    IMAGE_REPO_URL="https://github.com/ncwhale/docker-caddy-cloudflare-companion"
 
 RUN source /assets/functions/00-container && \
     set -x && \
