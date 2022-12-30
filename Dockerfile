@@ -2,7 +2,7 @@ ARG DISTRO="alpine"
 ARG DISTRO_VARIANT="3.17"
 
 FROM docker.io/tiredofit/${DISTRO}:${DISTRO_VARIANT}
-LABEL maintainer="Dave Conroy (github.com/tiredofit)"
+LABEL maintainer="Whale Mo (github.com/ncwhale)"
 
 ENV CONTAINER_ENABLE_MESSAGING=FALSE \
     CONTAINER_ENABLE_SCHEDULING=FALSE \
